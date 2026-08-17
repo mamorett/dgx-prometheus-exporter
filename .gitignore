@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+# built binary
+/dgx-exporter
+
 # Editor/IDE
 # .idea/
 # .vscode/

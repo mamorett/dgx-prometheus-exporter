@@ -14,9 +14,9 @@ import (
 
 // process describes one GPU context (graphics G or compute C).
 type process struct {
-	pid  string
-	kind string // "G" graphics or "C" compute
-	name string
+	pid   string
+	kind  string // "G" graphics or "C" compute
+	name  string
 	bytes int64
 }
 
@@ -199,17 +199,17 @@ func parseComputeApps(out string) ([]process, int) {
 // gatherGPUInfo builds the static GPU info, mirroring the Python _nvidia_driver.
 func (c *collector) gatherGPUInfo() gpuInfo {
 	info := gpuInfo{
-		name:              "NVIDIA GB10",
-		driver:            "unknown",
-		cuda:              "unknown",
-		uuid:              "unknown",
-		computeMode:       "unknown",
-		persistenceMode:   "unknown",
-		pstate:            "unknown",
-		pciBusID:          "unknown",
-		vbios:             "unknown",
-		computeCap:        "unknown",
-		host:              "unknown",
+		name:            "NVIDIA GB10",
+		driver:          "unknown",
+		cuda:            "unknown",
+		uuid:            "unknown",
+		computeMode:     "unknown",
+		persistenceMode: "unknown",
+		pstate:          "unknown",
+		pciBusID:        "unknown",
+		vbios:           "unknown",
+		computeCap:      "unknown",
+		host:            "unknown",
 	}
 
 	out, _ := runNvidiaSmi(
@@ -336,8 +336,8 @@ func render(s snapshot) string {
 	buf.WriteString("# TYPE dgx_unified_memory_process_used_bytes gauge\n")
 	for _, p := range s.procs {
 		buf.WriteString("dgx_unified_memory_process_used_bytes{pid=\"" + escape(p.pid) +
-			 "\",type=\"" + p.kind +
-			 "\",process_name=\"" + escape(p.name) + "\"} " +
+			"\",type=\"" + p.kind +
+			"\",process_name=\"" + escape(p.name) + "\"} " +
 			strconv.FormatInt(p.bytes, 10) + "\n")
 	}
 
@@ -416,4 +416,3 @@ func errorPayload(err error) string {
 		"dgx_collect_success 0\n" +
 		"# collector error: " + err.Error() + "\n"
 }
-

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -14,24 +17,62 @@ import (
 var version = "dev"
 
 func main() {
-	port := 9273
+	defaultPort := 9273
 	if v := os.Getenv("DGX_EXPORTER_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
-			port = p
+			defaultPort = p
 		} else {
-			log.Printf("warning: bad DGX_EXPORTER_PORT %q, using default %d", v, port)
+			log.Printf("warning: bad DGX_EXPORTER_PORT %q, using default %d", v, defaultPort)
 		}
 	}
-	interval := 10
+	defaultInterval := 10
 	if v := os.Getenv("COLLECT_INTERVAL"); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
-			interval = i
+			defaultInterval = i
 		} else {
-			log.Printf("warning: bad COLLECT_INTERVAL %q, using default %d", v, interval)
+			log.Printf("warning: bad COLLECT_INTERVAL %q, using default %d", v, defaultInterval)
 		}
 	}
 
-	log.Printf("dgx-prometheus-exporter v%s starting (port=%d interval=%ds)", version, port, interval)
+	var (
+		port        int
+		interval    int
+		listenHost  string
+		showVersion bool
+	)
+
+	flag.IntVar(&port, "port", defaultPort, "HTTP listen port (env: DGX_EXPORTER_PORT)")
+	flag.IntVar(&port, "p", defaultPort, "HTTP listen port (shorthand)")
+	flag.IntVar(&interval, "interval", defaultInterval, "Collection interval in seconds (env: COLLECT_INTERVAL)")
+	flag.IntVar(&interval, "i", defaultInterval, "Collection interval in seconds (shorthand)")
+	flag.StringVar(&listenHost, "addr", "0.0.0.0", "Listen address/host")
+	flag.StringVar(&listenHost, "a", "0.0.0.0", "Listen address/host (shorthand)")
+	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
+	flag.BoolVar(&showVersion, "v", false, "Print version and exit (shorthand)")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s (v%s):\n\n", os.Args[0], version)
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "  -p, --port int\n")
+		fmt.Fprintf(os.Stderr, "    \tHTTP listen port (default %d, env: DGX_EXPORTER_PORT)\n", defaultPort)
+		fmt.Fprintf(os.Stderr, "  -i, --interval int\n")
+		fmt.Fprintf(os.Stderr, "    \tCollection interval in seconds (default %d, env: COLLECT_INTERVAL)\n", defaultInterval)
+		fmt.Fprintf(os.Stderr, "  -a, --addr string\n")
+		fmt.Fprintf(os.Stderr, "    \tListen address (default \"0.0.0.0\")\n")
+		fmt.Fprintf(os.Stderr, "  -v, --version\n")
+		fmt.Fprintf(os.Stderr, "    \tPrint version and exit\n")
+		fmt.Fprintf(os.Stderr, "  -h, --help\n")
+		fmt.Fprintf(os.Stderr, "    \tPrint this help message and exit\n")
+	}
+
+	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("dgx-prometheus-exporter v%s\n", version)
+		os.Exit(0)
+	}
+
+	log.Printf("dgx-prometheus-exporter v%s starting (%s:%d interval=%ds)", version, listenHost, port, interval)
 
 	c := newCollector("")
 	latest := &atomic.Pointer[string]{}
@@ -53,8 +94,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		if p == "" || p == "/metrics" || (len(p) > 1 && strings.TrimRight(p, "/") == "/metrics") {
+		p := strings.TrimRight(r.URL.Path, "/")
+		if p == "" || p == "/metrics" {
 			s := latest.Load()
 			body := []byte(*s)
 			w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -66,7 +107,8 @@ func main() {
 		http.NotFound(w, r)
 	})
 
-	if err := http.ListenAndServe("0.0.0.0:"+strconv.Itoa(port), mux); err != nil {
+	addr := net.JoinHostPort(listenHost, strconv.Itoa(port))
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }

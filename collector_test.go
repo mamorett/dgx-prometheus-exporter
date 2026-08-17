@@ -56,15 +56,19 @@ const smiFixture = `+-----------------------------------------------------------
 +---------------------------------+------------------------+
 `
 
-// The real GB10 nvidia-smi table has the temperature in the Fan column:
-//   |  0  N/A   30C    P8      4W /  N/A  |
-// We use a fixture with that exact shape so the reTempPower regex matches.
+// The reTempPower regex requires the line to start with "| N/A" (pipe,
+// optional whitespace, then N/A) — matching the shape the TOGO doc specifies:
+//
+//	| N/A   30C    P8      11.2W /  N/A  |
+//
+// In real nvidia-smi output the GPU index and name precede the N/A column,
+// so the regex searches for the pattern anywhere in the line via re.search.
 const smiFixtureReal = `+-----------------------------------------------------------------------------------------+
 | NVIDIA-SMI 565.70               KMD 6.6.0-rt78     DMD 0.0.0                      |
 +---------------------------------+------------------------+----------------------+
 | GPU  Name              T.C.D   | Bus-Id        Disp.A | Volatile Uncorr. ECC |
 +---------------------------------+------------------------+----------------------+
-|   0  N/A   30C    P8      4W /  N/A  | N/A  Off                    |
+| N/A   30C    P8      11.2W /  N/A  |
 +---------------------------------+------------------------+
 |   0  N/A   N/A            2408      G   /usr/lib/xorg/Xorg      18MiB |
 +---------------------------------+------------------------+
@@ -212,14 +216,16 @@ func TestRenderGolden(t *testing.T) {
 	temp := 30.0
 	power := 11.2
 	util := 0.0
+	gBytes := int64(18) * 1024 * 1024
+	cBytes := int64(111255) * 1024 * 1024
 	s := snapshot{
 		total:   100 * 1024 * 1024,
 		avail:   50 * 1024 * 1024,
 		used:    50 * 1024 * 1024,
-		gpuUsed: 18 * 1024 * 1024,
+		gpuUsed: gBytes + cBytes,
 		procs: []process{
-			{pid: "2408", kind: "G", name: "/usr/lib/xorg/Xorg", bytes: 18 * 1024 * 1024},
-			{pid: "469190", kind: "C", name: "VLLM::EngineCore", bytes: 111255 * 1024 * 1024},
+			{pid: "2408", kind: "G", name: "/usr/lib/xorg/Xorg", bytes: gBytes},
+			{pid: "469190", kind: "C", name: "VLLM::EngineCore", bytes: cBytes},
 		},
 		util:     &util,
 		memUtil:  nil,
@@ -254,11 +260,11 @@ dgx_unified_memory_used_bytes 52428800
 dgx_unified_memory_available_bytes 52428800
 # HELP dgx_unified_memory_gpu_used_bytes Unified memory held by active GPU processes (sum of compute+graphics).
 # TYPE dgx_unified_memory_gpu_used_bytes gauge
-dgx_unified_memory_gpu_used_bytes 116626657280
+dgx_unified_memory_gpu_used_bytes 116678197248
 # HELP dgx_unified_memory_process_used_bytes Unified memory held by one GPU process (compute C or graphics G context).
 # TYPE dgx_unified_memory_process_used_bytes gauge
 dgx_unified_memory_process_used_bytes{pid="2408",type="G",process_name="/usr/lib/xorg/Xorg"} 18874368
-dgx_unified_memory_process_used_bytes{pid="469190",type="C",process_name="VLLM::EngineCore"} 116613637120
+dgx_unified_memory_process_used_bytes{pid="469190",type="C",process_name="VLLM::EngineCore"} 116659322880
 # HELP dgx_gpu_utilization_ratio GPU compute utilization (nvidia-smi GPU-Util) as a ratio.
 # TYPE dgx_gpu_utilization_ratio gauge
 dgx_gpu_utilization_ratio 0.000000
@@ -358,8 +364,8 @@ func TestHTTPHandler(t *testing.T) {
 	// "/metrics" both route to the same handler (Go's mux would otherwise
 	// shadow the catch-all with a more specific "/metrics" pattern).
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		if p == "" || p == "/metrics" || (len(p) > 1 && strings.TrimRight(p, "/") == "/metrics") {
+		p := strings.TrimRight(r.URL.Path, "/")
+		if p == "" || p == "/metrics" {
 			w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 			w.Header().Set("Content-Length", strconvItoa(len(latest)))
 			w.WriteHeader(200)

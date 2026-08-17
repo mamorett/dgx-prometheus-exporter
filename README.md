@@ -36,15 +36,18 @@ Notes on value formats:
   `--query-compute-apps`) and `G` for graphics (from the human-readable
   table).
 
-## Environment variables
+## CLI Flags & Environment Variables
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `DGX_EXPORTER_PORT` | `9273` | HTTP listen port. |
-| `COLLECT_INTERVAL` | `10` | Seconds between collection cycles. |
-| `DGX_HOST_NAME` | `os.Hostname()` | `host` label on `dgx_gpu_info`. |
-| `DGX_DRIVER_VERSION` | `""` | Authoritative driver version; overrides nvidia-smi. |
-| `DGX_CUDA_VERSION` | `""` | Authoritative CUDA version (nvidia-smi reports N/A in container). |
+| Flag | Shorthand | Environment Variable | Default | Meaning |
+|---|---|---|---|---|
+| `--port` | `-p` | `DGX_EXPORTER_PORT` | `9273` | HTTP listen port. |
+| `--interval` | `-i` | `COLLECT_INTERVAL` | `10` | Seconds between collection cycles. |
+| `--addr` | `-a` | — | `0.0.0.0` | Listen address/host. |
+| `--version` | `-v` | — | — | Print version and exit. |
+| `--help` | `-h` | — | — | Print usage help and exit. |
+| — | — | `DGX_HOST_NAME` | `os.Hostname()` | `host` label on `dgx_gpu_info`. |
+| — | — | `DGX_DRIVER_VERSION` | `""` | Authoritative driver version; overrides nvidia-smi. |
+| — | — | `DGX_CUDA_VERSION` | `""` | Authoritative CUDA version (nvidia-smi reports N/A in container). |
 
 ## Build
 

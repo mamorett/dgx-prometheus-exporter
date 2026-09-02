@@ -209,6 +209,29 @@ scrape_configs:
       - targets: ["<dgx-host>:9273"]
 ```
 
+## Grafana dashboard
+
+`grafana-dashboard.json` is a ready-to-import dashboard for the metrics above
+(*NVIDIA DGX Spark (GB10) Telemetry*, uid `dgx-spark-gb10`). Import it via
+**Dashboards → Import** and point the `Data Source` variable at your Prometheus.
+
+It repeats one row per host (`DGX Spark — $host`), the `Host` dropdown being
+fed by `label_values(dgx_spark_info, host)`. Only `dgx_spark_info` and
+`dgx_gpu_info` carry a `host` label, so every other panel attaches it at query
+time with `… * on(instance) group_left(host) dgx_spark_info`. Two consequences:
+
+- hosts must have distinct `instance` labels (any normal scrape config gives
+  you this), and
+- `host` has to be meaningful — in a container that means setting
+  `DGX_HOST_NAME`, otherwise the dropdown lists truncated container IDs.
+
+Panels: exporter health, temperature, power draw, compute apps, device info,
+unified-memory overview and history, GPU / memory-controller utilization,
+per-process memory usage, and a hardware + driver table. The per-process panel
+stays empty without `--pid=host` (see Container). The temperature panels turn
+red at 85 °C, matching the `DGXGPUTooHot` alert above; the power panels top out
+at 140 W because the GB10 reports no `power.limit` to read.
+
 ## Troubleshooting
 
 - **`dgx_collect_success 0`** — a source failed. Read the

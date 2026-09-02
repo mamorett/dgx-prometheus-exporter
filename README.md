@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="dgx-prometheus-exporter logo" width="200"/>
+</p>
+
 # dgx-prometheus-exporter
 
 A self-contained Prometheus exporter for NVIDIA DGX Spark (GB10) unified

@@ -16,6 +16,10 @@ import (
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
+// noDataFailure labels a cycle that produced nothing renderable, as opposed to
+// a cycle that degraded but still served data.
+const noDataFailure = "no-data"
+
 func main() {
 	defaultPort := 9273
 	if v := os.Getenv("DGX_EXPORTER_PORT"); v != "" {
@@ -72,6 +76,15 @@ func main() {
 		os.Exit(0)
 	}
 
+	// A non-positive interval makes time.Sleep return immediately, turning the
+	// collector into a tight loop that forks nvidia-smi on every pass.
+	if interval <= 0 {
+		log.Fatalf("invalid interval %d: must be a positive number of seconds", interval)
+	}
+	if port < 1 || port > 65535 {
+		log.Fatalf("invalid port %d: must be in 1-65535", port)
+	}
+
 	log.Printf("dgx-prometheus-exporter v%s starting (%s:%d interval=%ds)", version, listenHost, port, interval)
 
 	c := newCollector("")
@@ -79,15 +92,34 @@ func main() {
 	starting := "# dgx custom collector starting...\n"
 	latest.Store(&starting)
 
+	// Track the last reported failure so a persistently broken driver logs once
+	// on the transition instead of one line every interval.
+	var loggedFailure string
 	go func() {
 		for {
 			text, err := c.collect()
 			if err != nil {
+				log.Printf("error: collection produced no data: %v", err)
 				payload := errorPayload(err)
 				latest.Store(&payload)
 			} else {
 				latest.Store(&text)
 			}
+
+			failure := noDataFailure
+			if err == nil {
+				failure = strings.Join(c.lastErrs, "; ")
+			}
+			switch {
+			case failure == "":
+				if loggedFailure != "" {
+					log.Printf("collection recovered")
+				}
+			case failure != loggedFailure:
+				log.Printf("warning: collection degraded: %s", failure)
+			}
+			loggedFailure = failure
+
 			time.Sleep(time.Duration(interval) * time.Second)
 		}
 	}()

@@ -1,0 +1,44 @@
+# DGX Spark (GB10) Prometheus exporter.
+#
+# Requires the NVIDIA Container Toolkit on the host — `docker info`
+# --format '{{json .Runtimes}}' must list `nvidia`.
+#
+#   DGX_HOST_NAME=$(hostname) docker compose up -d --build
+#   curl -s localhost:9273/metrics
+
+services:
+  dgx-exporter:
+    build: .
+    image: dgx-exporter:latest
+    container_name: dgx-exporter
+    restart: unless-stopped
+    ports:
+      - "9273:9273"
+
+    # NVIDIA's userspace remaps PIDs into the container's PID namespace, so
+    # without this the GPU process queries legitimately return an empty list
+    # and dgx_gpu_compute_apps stays 0.
+    pid: host
+
+    # What `--gpus all` looks like in Compose. This is what injects nvidia-smi,
+    # the driver libraries and the /dev/nvidia* nodes; without it every GPU
+    # metric is nan.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+
+    environment:
+      # The container's own hostname is a truncated container ID, which makes a
+      # poor `host` label — pass the real one: DGX_HOST_NAME=$(hostname).
+      DGX_HOST_NAME: ${DGX_HOST_NAME:-dgx-spark}
+      COLLECT_INTERVAL: "10"
+
+      # Optional label overrides. Inside a container nvidia-smi reports what the
+      # injected compatibility library advertises, which need not match the host
+      # driver. Set these only if you alert on those label values.
+      # DGX_DRIVER_VERSION: "580.173.02"
+      # DGX_CUDA_VERSION: "13.0"

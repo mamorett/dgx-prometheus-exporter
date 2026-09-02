@@ -30,6 +30,9 @@ go.work.sum
 # built binary
 /dgx-exporter
 
+# Qwen Code agent state
+.qwen/
+
 # Editor/IDE
 # .idea/
 # .vscode/

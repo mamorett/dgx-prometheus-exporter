@@ -11,76 +11,106 @@ import (
 	"testing"
 )
 
-// TestReadMeminfo uses a temp file so the real /proc/meminfo is not required.
-func TestReadMeminfo(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "meminfo")
-	content := `MemTotal:       128000000 kB
+// fakeSmi is an injectable nvidia-smi. It routes on the argument shape the
+// collector actually issues, so a test can make exactly one source fail.
+type fakeSmi struct {
+	table string
+	tele  string
+	info  string
+	apps  string
+	err   error // when set, every invocation fails with it
+}
+
+func (f fakeSmi) run(args ...string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	joined := strings.Join(args, " ")
+	switch {
+	case strings.HasPrefix(joined, "--query-gpu=temperature"):
+		return f.tele, nil
+	case strings.HasPrefix(joined, "--query-gpu=name"):
+		return f.info, nil
+	case strings.HasPrefix(joined, "--query-compute-apps"):
+		return f.apps, nil
+	default:
+		return f.table, nil
+	}
+}
+
+// Values below are the real shapes produced by driver 580.173.02 on a GB10.
+const (
+	fakeTele = "52, 9.43, 0, 0"
+	fakeInfo = "NVIDIA GB10, 580.173.02, GPU-0cddbf68-70f0-0aa4-7f92-a624e48fef64, Default, Enabled, P0, 0000000F:01:00.0, 9A.0B.1E.00.00, 12.1"
+	fakeApps = "212029, VLLM::EngineCore, 105530\n"
+)
+
+const fakeTable = `+-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.173.02             Driver Version: 580.173.02     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| N/A   48C    P0              9W /  N/A  | Not Supported          |      0%      Default |
++-----------------------------------------+------------------------+----------------------+
+|    0   N/A  N/A            3623      G   /usr/lib/xorg/Xorg                       47MiB |
++-----------------------------------------+----------------------+
+`
+
+// tableTempPower has the telemetry row but no structured-query counterpart.
+const tableTempPower = `| NVIDIA-SMI 580.173.02   CUDA Version: 13.0     |
+| N/A   48C    P0              9W /  N/A  | Not Supported          |      0%      Default |
+`
+
+// writeMeminfo drops a fixture meminfo into a temp dir and returns its path.
+func writeMeminfo(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "meminfo")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+const meminfoFixture = `MemTotal:       128000000 kB
 MemFree:         10000000 kB
 MemAvailable:    90000000 kB
 Buffers:            100000 kB
 Cached:            2000000 kB
 `
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+
+func TestReadMeminfo(t *testing.T) {
+	path := writeMeminfo(t, meminfoFixture)
+	total, avail, err := readMeminfo(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	total, avail := readMeminfo(path)
-	wantTotal := int64(128000000 * 1024)
-	wantAvail := int64(90000000 * 1024)
-	if total != wantTotal {
-		t.Errorf("total = %d, want %d", total, wantTotal)
+	if want := int64(128000000) * 1024; total != want {
+		t.Errorf("total = %d, want %d", total, want)
 	}
-	if avail != wantAvail {
-		t.Errorf("avail = %d, want %d", avail, wantAvail)
+	if want := int64(90000000) * 1024; avail != want {
+		t.Errorf("avail = %d, want %d", avail, want)
 	}
 }
 
-func TestReadMeminfoMissing(t *testing.T) {
-	total, avail := readMeminfo("/nonexistent/meminfo")
+func TestReadMeminfoMissingIsAnError(t *testing.T) {
+	total, avail, err := readMeminfo("/nonexistent/meminfo")
+	if err == nil {
+		t.Fatal("expected an error for an unreadable meminfo, got none")
+	}
 	if total != 0 || avail != 0 {
 		t.Errorf("expected (0,0), got (%d,%d)", total, avail)
 	}
 }
 
-// Fixture that mimics the shape of `nvidia-smi` on a DGX Spark.
-const smiFixture = `+-----------------------------------------------------------------------------------------+
-| NVIDIA-SMI 565.70               KMD 6.6.0-rt78     DMD 0.0.0                      |
-+---------------------------------+------------------------+----------------------+
-| GPU  Name              T.C.D   | Bus-Id        Disp.A | Volatile Uncorr. ECC |
-| Fan  Temp  Perf          Pwr: |                       |                          |
-|   0  GB10          N/A  30C    | N/A             11.2W | N/A                    |
-+---------------------------------+------------------------+
-|   0  N/A   N/A            2408      G   /usr/lib/xorg/Xorg      18MiB |
-+---------------------------------+------------------------+
-| Not Supported          |      0%      Default           |
-+---------------------------------+------------------------+
-`
-
-// The reTempPower regex requires the line to start with "| N/A" (pipe,
-// optional whitespace, then N/A) — matching the shape the TOGO doc specifies:
-//
-//	| N/A   30C    P8      11.2W /  N/A  |
-//
-// In real nvidia-smi output the GPU index and name precede the N/A column,
-// so the regex searches for the pattern anywhere in the line via re.search.
-const smiFixtureReal = `+-----------------------------------------------------------------------------------------+
-| NVIDIA-SMI 565.70               KMD 6.6.0-rt78     DMD 0.0.0                      |
-+---------------------------------+------------------------+----------------------+
-| GPU  Name              T.C.D   | Bus-Id        Disp.A | Volatile Uncorr. ECC |
-+---------------------------------+------------------------+----------------------+
-| N/A   30C    P8      11.2W /  N/A  |
-+---------------------------------+------------------------+
-|   0  N/A   N/A            2408      G   /usr/lib/xorg/Xorg      18MiB |
-+---------------------------------+------------------------+
-| Not Supported          |      0%      Default           |
-+---------------------------------+------------------------+
-`
+func TestReadMeminfoNoMemTotalIsAnError(t *testing.T) {
+	path := writeMeminfo(t, "MemFree: 1 kB\n")
+	if _, _, err := readMeminfo(path); err == nil {
+		t.Fatal("expected an error when MemTotal is absent")
+	}
+}
 
 func TestParseSmiTable(t *testing.T) {
-	gpuUsed, procs, util, memUtil, temp, power, appCount := parseSmiTable(smiFixtureReal)
+	gpuUsed, procs, util, memUtil, temp, power, appCount, cuda := parseSmiTable(fakeTable)
 
-	// 18 MiB = 18 * 1024 * 1024
-	wantGPUUsed := int64(18) * 1024 * 1024
+	wantGPUUsed := int64(47) * 1024 * 1024
 	if gpuUsed != wantGPUUsed {
 		t.Errorf("gpuUsed = %d, want %d", gpuUsed, wantGPUUsed)
 	}
@@ -88,29 +118,26 @@ func TestParseSmiTable(t *testing.T) {
 		t.Errorf("appCount = %d, want 0 (table step does not count compute apps)", appCount)
 	}
 	if memUtil != nil {
-		t.Errorf("memUtil = %v, want nil", *memUtil)
+		t.Errorf("memUtil = %v, want nil (the table has no memory-controller field)", *memUtil)
 	}
 	if util == nil || *util != 0.0 {
 		t.Errorf("util = %v, want 0.0", util)
 	}
-	if temp == nil || *temp != 30.0 {
-		t.Errorf("temp = %v, want 30.0", temp)
+	if temp == nil || *temp != 48.0 {
+		t.Errorf("temp = %v, want 48.0", temp)
 	}
-	if power == nil || *power != 11.2 {
-		t.Errorf("power = %v, want 11.2", power)
+	if power == nil || *power != 9.0 {
+		t.Errorf("power = %v, want 9.0", power)
+	}
+	if cuda != "13.0" {
+		t.Errorf("cuda = %q, want 13.0", cuda)
 	}
 	if len(procs) != 1 {
 		t.Fatalf("len(procs) = %d, want 1", len(procs))
 	}
 	p := procs[0]
-	if p.pid != "2408" {
-		t.Errorf("pid = %q, want 2408", p.pid)
-	}
-	if p.kind != "G" {
-		t.Errorf("kind = %q, want G", p.kind)
-	}
-	if p.name != "/usr/lib/xorg/Xorg" {
-		t.Errorf("name = %q, want /usr/lib/xorg/Xorg", p.name)
+	if p.pid != "3623" || p.kind != "G" || p.name != "/usr/lib/xorg/Xorg" {
+		t.Errorf("procs[0] = %+v", p)
 	}
 	if p.bytes != wantGPUUsed {
 		t.Errorf("bytes = %d, want %d", p.bytes, wantGPUUsed)
@@ -118,13 +145,59 @@ func TestParseSmiTable(t *testing.T) {
 }
 
 func TestParseSmiTableEmpty(t *testing.T) {
-	gpuUsed, procs, util, memUtil, temp, power, appCount := parseSmiTable("")
-	if gpuUsed != 0 || util != nil || memUtil != nil || temp != nil || power != nil || appCount != 0 {
-		t.Errorf("expected zero results: gpuUsed=%d util=%v memUtil=%v temp=%v power=%v appCount=%d",
-			gpuUsed, util, memUtil, temp, power, appCount)
+	gpuUsed, procs, util, memUtil, temp, power, appCount, cuda := parseSmiTable("")
+	if gpuUsed != 0 || util != nil || memUtil != nil || temp != nil || power != nil || appCount != 0 || cuda != "" {
+		t.Errorf("expected zero results, got gpuUsed=%d util=%v memUtil=%v temp=%v power=%v appCount=%d cuda=%q",
+			gpuUsed, util, memUtil, temp, power, appCount, cuda)
 	}
 	if len(procs) != 0 {
 		t.Errorf("len(procs) = %d, want 0", len(procs))
+	}
+}
+
+func TestParseTelemetry(t *testing.T) {
+	temp, power, util, memUtil := parseTelemetry([]string{"52", "9.43", "0", "0"})
+	if temp == nil || *temp != 52 {
+		t.Errorf("temp = %v, want 52", temp)
+	}
+	if power == nil || *power != 9.43 {
+		t.Errorf("power = %v, want 9.43", power)
+	}
+	if util == nil || *util != 0 {
+		t.Errorf("util = %v, want 0", util)
+	}
+	if memUtil == nil || *memUtil != 0 {
+		t.Errorf("memUtil = %v, want 0", memUtil)
+	}
+}
+
+func TestParseTelemetryRatiosArePercentScaled(t *testing.T) {
+	_, _, util, memUtil := parseTelemetry([]string{"52", "9.43", "84", "12"})
+	if util == nil || *util != 0.84 {
+		t.Errorf("util = %v, want 0.84", util)
+	}
+	if memUtil == nil || *memUtil != 0.12 {
+		t.Errorf("memUtil = %v, want 0.12", memUtil)
+	}
+}
+
+func TestParseTelemetryShortRowIsAllUnknown(t *testing.T) {
+	temp, power, util, memUtil := parseTelemetry([]string{"52", "9.43"})
+	if temp != nil || power != nil || util != nil || memUtil != nil {
+		t.Errorf("expected all nil for a short row, got %v %v %v %v", temp, power, util, memUtil)
+	}
+}
+
+func TestParseSmiFloatNAForms(t *testing.T) {
+	for _, s := range []string{"", " ", "N/A", "n/a", "[N/A]", "[Not Supported]", "Not Supported", "bogus"} {
+		if got := parseSmiFloat(s); got != nil {
+			t.Errorf("parseSmiFloat(%q) = %v, want nil", s, *got)
+		}
+	}
+	for _, s := range []string{"0", " 52 ", "9.43", "[9.43]"} {
+		if got := parseSmiFloat(s); got == nil {
+			t.Errorf("parseSmiFloat(%q) = nil, want a value", s)
+		}
 	}
 }
 
@@ -140,16 +213,11 @@ func TestParseComputeApps(t *testing.T) {
 	if procs[0].pid != "469190" || procs[0].kind != "C" || procs[0].name != "VLLM::EngineCore" {
 		t.Errorf("procs[0] = %+v", procs[0])
 	}
-	wantBytes := int64(111255) * 1024 * 1024
-	if procs[0].bytes != wantBytes {
-		t.Errorf("procs[0].bytes = %d, want %d", procs[0].bytes, wantBytes)
+	if want := int64(111255) * 1024 * 1024; procs[0].bytes != want {
+		t.Errorf("procs[0].bytes = %d, want %d", procs[0].bytes, want)
 	}
 	if procs[1].pid != "12345" || procs[1].name != "python" {
 		t.Errorf("procs[1] = %+v", procs[1])
-	}
-	wantBytes2 := int64(128) * 1024 * 1024
-	if procs[1].bytes != wantBytes2 {
-		t.Errorf("procs[1].bytes = %d, want %d", procs[1].bytes, wantBytes2)
 	}
 }
 
@@ -161,8 +229,7 @@ func TestParseComputeAppsEmpty(t *testing.T) {
 }
 
 func TestParseComputeAppsMalformedSkipped(t *testing.T) {
-	out := "abc, python, not_a_number\n"
-	procs, count := parseComputeApps(out)
+	procs, count := parseComputeApps("abc, python, not_a_number\n")
 	if count != 0 || len(procs) != 0 {
 		t.Errorf("expected nothing parsed, got procs=%v count=%d", procs, count)
 	}
@@ -173,52 +240,82 @@ func TestGatherGPUInfoEnvOverrides(t *testing.T) {
 	t.Setenv("DGX_DRIVER_VERSION", "565.70")
 	t.Setenv("DGX_CUDA_VERSION", "12.4")
 
-	c := newCollector("/nonexistent/meminfo")
-	info := c.gatherGPUInfo()
+	c := newCollectorWithSmi("/nonexistent/meminfo", fakeSmi{info: fakeInfo}.run)
+	info := c.gatherGPUInfo("13.0")
 
 	if info.host != "dgx1" {
 		t.Errorf("host = %q, want dgx1", info.host)
 	}
 	if info.driver != "565.70" {
-		t.Errorf("driver = %q, want 565.70", info.driver)
+		t.Errorf("driver = %q, want 565.70 (env must win over nvidia-smi)", info.driver)
 	}
 	if info.cuda != "12.4" {
-		t.Errorf("cuda = %q, want 12.4", info.cuda)
+		t.Errorf("cuda = %q, want 12.4 (env must win over the banner)", info.cuda)
 	}
 }
 
-func TestGatherGPUInfoDefaultsWhenEnvUnset(t *testing.T) {
+func TestGatherGPUInfoFromQuery(t *testing.T) {
+	t.Setenv("DGX_HOST_NAME", "dgx1")
+	t.Setenv("DGX_DRIVER_VERSION", "")
+	t.Setenv("DGX_CUDA_VERSION", "")
+
+	c := newCollectorWithSmi("", fakeSmi{info: fakeInfo}.run)
+	info := c.gatherGPUInfo("13.0")
+
+	if info.name != "NVIDIA GB10" {
+		t.Errorf("name = %q", info.name)
+	}
+	if info.driver != "580.173.02" {
+		t.Errorf("driver = %q", info.driver)
+	}
+	if info.cuda != "13.0" {
+		t.Errorf("cuda = %q, want 13.0 from the banner", info.cuda)
+	}
+	if info.uuid != "GPU-0cddbf68-70f0-0aa4-7f92-a624e48fef64" {
+		t.Errorf("uuid = %q, want the full UUID untruncated", info.uuid)
+	}
+	if info.computeCap != "12.1" || info.vbios != "9A.0B.1E.00.00" || info.pstate != "P0" {
+		t.Errorf("info = %+v", info)
+	}
+}
+
+func TestGatherGPUInfoUnknownWhenQueryFails(t *testing.T) {
 	t.Setenv("DGX_HOST_NAME", "")
 	t.Setenv("DGX_DRIVER_VERSION", "")
 	t.Setenv("DGX_CUDA_VERSION", "")
 
-	c := newCollector("/nonexistent/meminfo")
-	info := c.gatherGPUInfo()
+	c := newCollectorWithSmi("", fakeSmi{err: errSmiUnavailable}.run)
+	info := c.gatherGPUInfo("")
 
-	// The default for name is "NVIDIA GB10" — but on a machine with a real
-	// GPU, nvidia-smi will override it. We only assert on the fallback host
-	// (which is always populated from os.Hostname() when DGX_HOST_NAME is
-	// empty) and that cuda/driver are non-empty (real GPU: nvidia-smi
-	// populates them, no GPU: defaults "unknown").
 	host, _ := os.Hostname()
 	if info.host != host {
 		t.Errorf("host = %q, want %q", info.host, host)
 	}
-	if info.driver == "" {
-		t.Errorf("driver is empty, want at least the default 'unknown'")
+	for name, v := range map[string]string{
+		"name": info.name, "driver": info.driver, "cuda": info.cuda, "uuid": info.uuid,
+		"computeCap": info.computeCap, "pstate": info.pstate,
+	} {
+		if v != "unknown" {
+			t.Errorf("%s = %q, want \"unknown\"", name, v)
+		}
 	}
-	if info.cuda == "" {
-		t.Errorf("cuda is empty, want at least the default 'unknown'")
+}
+
+func TestSnapshotOK(t *testing.T) {
+	if !(snapshot{}).ok() {
+		t.Error("a snapshot with no errors must report ok")
+	}
+	if (snapshot{errs: []string{"boom"}}).ok() {
+		t.Error("a snapshot with errors must not report ok")
 	}
 }
 
 func TestRenderGolden(t *testing.T) {
-	temp := 30.0
-	power := 11.2
-	util := 0.0
+	temp, power, util, memUtil := 52.0, 9.43, 0.0, 0.0
 	gBytes := int64(18) * 1024 * 1024
 	cBytes := int64(111255) * 1024 * 1024
 	s := snapshot{
+		memOK:   true,
 		total:   100 * 1024 * 1024,
 		avail:   50 * 1024 * 1024,
 		used:    50 * 1024 * 1024,
@@ -228,22 +325,15 @@ func TestRenderGolden(t *testing.T) {
 			{pid: "469190", kind: "C", name: "VLLM::EngineCore", bytes: cBytes},
 		},
 		util:     &util,
-		memUtil:  nil,
+		memUtil:  &memUtil,
 		temp:     &temp,
 		power:    &power,
 		appCount: 1,
 		info: gpuInfo{
-			name:            "NVIDIA GB10",
-			driver:          "565.70",
-			cuda:            "12.4",
-			uuid:            "GPU-12345678-1234-1234",
-			computeMode:     "Default",
-			persistenceMode: "Enabled",
-			pstate:          "P0",
-			pciBusID:        "0000:00:00.0",
-			vbios:           "97.40",
-			computeCap:      "12.0",
-			host:            "dgx1",
+			name: "NVIDIA GB10", driver: "580.173.02", cuda: "13.0",
+			uuid: "GPU-0cddbf68-70f0-0aa4-7f92-a624e48fef64", computeMode: "Default",
+			persistenceMode: "Enabled", pstate: "P0", pciBusID: "0000000F:01:00.0",
+			vbios: "9A.0B.1E.00.00", computeCap: "12.1", host: "dgx1",
 		},
 	}
 
@@ -268,18 +358,21 @@ dgx_unified_memory_process_used_bytes{pid="469190",type="C",process_name="VLLM::
 # HELP dgx_gpu_utilization_ratio GPU compute utilization (nvidia-smi GPU-Util) as a ratio.
 # TYPE dgx_gpu_utilization_ratio gauge
 dgx_gpu_utilization_ratio 0.000000
-# HELP dgx_gpu_temperature_celsius GPU temperature in Celsius.
+# HELP dgx_gpu_memory_controller_ratio Memory controller utilization ratio.
+# TYPE dgx_gpu_memory_controller_ratio gauge
+dgx_gpu_memory_controller_ratio 0.000000
+# HELP dgx_gpu_temperature_celsius GPU temperature in Celsius. nan only when nvidia-smi could not answer.
 # TYPE dgx_gpu_temperature_celsius gauge
-dgx_gpu_temperature_celsius 30.0
-# HELP dgx_gpu_power_draw_watts GPU power draw in watts.
+dgx_gpu_temperature_celsius 52.0
+# HELP dgx_gpu_power_draw_watts GPU power draw in watts. nan only when nvidia-smi could not answer.
 # TYPE dgx_gpu_power_draw_watts gauge
-dgx_gpu_power_draw_watts 11.20
+dgx_gpu_power_draw_watts 9.43
 # HELP dgx_gpu_compute_apps Number of processes with a compute context on the GPU.
 # TYPE dgx_gpu_compute_apps gauge
 dgx_gpu_compute_apps 1
 # HELP dgx_gpu_info Static GPU info.
 # TYPE dgx_gpu_info gauge
-dgx_gpu_info{name="NVIDIA GB10",driver="565.70",cuda="12.4",uuid="GPU-1234",pci_bus_id="0000:00:00.0",host="dgx1",vbios="97.40",compute_cap="12.0",pstate="P0",compute_mode="Default"} 1
+dgx_gpu_info{name="NVIDIA GB10",driver="580.173.02",cuda="13.0",uuid="GPU-0cddbf68-70f0-0aa4-7f92-a624e48fef64",pci_bus_id="0000000F:01:00.0",host="dgx1",vbios="9A.0B.1E.00.00",compute_cap="12.1",pstate="P0",compute_mode="Default"} 1
 # HELP dgx_gpu_pstate GPU performance state (NVIDIA P-state).
 # TYPE dgx_gpu_pstate gauge
 dgx_gpu_pstate{pstate="P0"} 1
@@ -304,20 +397,200 @@ dgx_collect_success 1
 	}
 }
 
-func TestRenderNilUtilNan(t *testing.T) {
-	s := snapshot{
-		total:    1024,
-		avail:    512,
-		used:     512,
-		gpuUsed:  0,
-		procs:    nil,
-		util:     nil,
-		appCount: 0,
-		info:     gpuInfo{host: "x"},
+// TestRenderAlwaysEmitsCrucialMetrics guards the guarantee that temperature,
+// power and the memory controller ratio are present as series even when every
+// source came back unknown. An absent series reads as "no data", which is
+// indistinguishable from an exporter that is not deployed at all.
+func TestRenderAlwaysEmitsCrucialMetrics(t *testing.T) {
+	out := render(snapshot{total: 1024, avail: 512, used: 512})
+
+	for _, want := range []string{
+		"dgx_gpu_temperature_celsius nan\n",
+		"dgx_gpu_power_draw_watts nan\n",
+		"dgx_gpu_memory_controller_ratio nan\n",
+		"dgx_gpu_utilization_ratio nan\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
 	}
-	out := render(s)
-	if !strings.Contains(out, "dgx_gpu_utilization_ratio nan\n") {
-		t.Errorf("expected 'dgx_gpu_utilization_ratio nan', got:\n%s", out)
+}
+
+// TestRenderDegradedMarksFailureUnreachable guards dgx_collect_success 0: it is
+// the signal operators alert on, so it must actually fire on a bad cycle.
+func TestRenderDegradedMarksFailure(t *testing.T) {
+	out := render(snapshot{errs: []string{"GPU temperature unavailable"}})
+
+	if !strings.Contains(out, "dgx_collect_success 0\n") {
+		t.Errorf("expected dgx_collect_success 0, got:\n%s", out)
+	}
+	if !strings.Contains(out, "# collector error: GPU temperature unavailable\n") {
+		t.Errorf("expected the failure reason as a comment, got:\n%s", out)
+	}
+	// A degraded cycle must still serve the metrics that did answer.
+	if !strings.Contains(out, "dgx_gpu_temperature_celsius") {
+		t.Error("degraded cycle must still render the temperature series")
+	}
+}
+
+func TestRenderMemoryUnknownIsNanNotZero(t *testing.T) {
+	out := render(snapshot{memOK: false, total: 0, avail: 0, used: 0})
+	for _, want := range []string{
+		"dgx_unified_memory_total_bytes nan\n",
+		"dgx_unified_memory_used_bytes nan\n",
+		"dgx_unified_memory_available_bytes nan\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("unreadable meminfo must render %q, not a fabricated 0; got:\n%s", want, out)
+		}
+	}
+}
+
+func TestCollectHealthy(t *testing.T) {
+	mem := writeMeminfo(t, meminfoFixture)
+	c := newCollectorWithSmi(mem, fakeSmi{table: fakeTable, tele: fakeTele, info: fakeInfo, apps: fakeApps}.run)
+
+	out, err := c.collect()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		"dgx_gpu_temperature_celsius 52.0\n",
+		"dgx_gpu_power_draw_watts 9.43\n",
+		"dgx_gpu_memory_controller_ratio 0.000000\n",
+		"dgx_collect_success 1\n",
+		`cuda="13.0"`,
+		`uuid="GPU-0cddbf68-70f0-0aa4-7f92-a624e48fef64"`,
+		"dgx_gpu_compute_apps 1\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "# collector error:") {
+		t.Errorf("healthy cycle must not report errors:\n%s", out)
+	}
+	if len(c.lastErrs) != 0 {
+		t.Errorf("lastErrs = %v, want empty", c.lastErrs)
+	}
+}
+
+// TestCollectSmiUnavailableIsDegradedNotSilent is the regression test for the
+// false-success bug: with nvidia-smi gone but meminfo readable, the exporter
+// must serve what it has and flag dgx_collect_success 0.
+func TestCollectSmiUnavailableIsDegradedNotSilent(t *testing.T) {
+	mem := writeMeminfo(t, meminfoFixture)
+	c := newCollectorWithSmi(mem, fakeSmi{err: errSmiUnavailable}.run)
+
+	out, err := c.collect()
+	if err != nil {
+		t.Fatalf("degraded cycle must still serve data, got error: %v", err)
+	}
+	if !strings.Contains(out, "dgx_collect_success 0\n") {
+		t.Errorf("expected dgx_collect_success 0 when nvidia-smi is gone, got:\n%s", out)
+	}
+	if !strings.Contains(out, "dgx_gpu_temperature_celsius nan\n") {
+		t.Errorf("temperature series must still be present as nan, got:\n%s", out)
+	}
+	if !strings.Contains(out, "dgx_unified_memory_total_bytes 131072000000\n") {
+		t.Errorf("meminfo-derived metrics must survive, got:\n%s", out)
+	}
+	if len(c.lastErrs) == 0 {
+		t.Error("lastErrs must record the failure so main.go can log it")
+	}
+}
+
+func TestCollectBothSourcesDeadIsFatal(t *testing.T) {
+	c := newCollectorWithSmi("/nonexistent/meminfo", fakeSmi{err: errSmiUnavailable}.run)
+
+	if out, err := c.collect(); err == nil {
+		t.Fatalf("expected a fatal error when nothing is collectable, got:\n%s", out)
+	}
+	if len(c.lastErrs) == 0 {
+		t.Error("lastErrs must be populated on the fatal path too")
+	}
+}
+
+// TestCollectTempFallsBackToTable covers the second source for the crucial
+// thermal metrics: the structured query answers nothing, the table row does.
+func TestCollectTempFallsBackToTable(t *testing.T) {
+	mem := writeMeminfo(t, meminfoFixture)
+	c := newCollectorWithSmi(mem, fakeSmi{
+		table: tableTempPower,
+		tele:  "[N/A], [N/A], [N/A], [N/A]",
+		info:  fakeInfo,
+	}.run)
+
+	out, err := c.collect()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		"dgx_gpu_temperature_celsius 48.0\n",
+		"dgx_gpu_power_draw_watts 9.00\n",
+		"dgx_gpu_utilization_ratio 0.000000\n",
+		"dgx_collect_success 1\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// TestCollectMissingTempMarksFailure pins the promise that losing temperature is
+// never reported as success.
+func TestCollectMissingTempMarksFailure(t *testing.T) {
+	mem := writeMeminfo(t, meminfoFixture)
+	c := newCollectorWithSmi(mem, fakeSmi{
+		table: "",
+		tele:  "N/A, N/A, 0, 0",
+		info:  fakeInfo,
+	}.run)
+
+	out, err := c.collect()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "dgx_collect_success 0\n") {
+		t.Errorf("losing temperature must clear dgx_collect_success, got:\n%s", out)
+	}
+	if !strings.Contains(out, "# collector error: GPU temperature unavailable\n") {
+		t.Errorf("expected the temperature loss to be named, got:\n%s", out)
+	}
+}
+
+// TestCollectOptionalFieldNAStaysHealthy pins the documented asymmetry: an
+// unsupported optional field renders nan without failing the cycle, because
+// failing on a field the hardware legitimately lacks would leave
+// dgx_collect_success permanently 0 and therefore useless.
+func TestCollectOptionalFieldNAStaysHealthy(t *testing.T) {
+	mem := writeMeminfo(t, meminfoFixture)
+	c := newCollectorWithSmi(mem, fakeSmi{
+		table: fakeTable,
+		tele:  "52, 9.43, 0, N/A",
+		info:  fakeInfo,
+	}.run)
+
+	out, err := c.collect()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "dgx_gpu_memory_controller_ratio nan\n") {
+		t.Errorf("unsupported memory-controller field must render nan, got:\n%s", out)
+	}
+	if !strings.Contains(out, "dgx_collect_success 1\n") {
+		t.Errorf("an unsupported optional field must not fail the cycle, got:\n%s", out)
+	}
+}
+
+func TestCollectComputeAppsExcludedWhenSmiTableFails(t *testing.T) {
+	mem := writeMeminfo(t, meminfoFixture)
+	// Plain table exits non-zero-ish but is unavailable: compute apps must not
+	// be counted from a source that never answered.
+	c := newCollectorWithSmi(mem, fakeSmi{err: errSmiUnavailable}.run)
+	out, _ := c.collect()
+	if !strings.Contains(out, "dgx_gpu_compute_apps 0\n") {
+		t.Errorf("compute apps must be 0 with no nvidia-smi, got:\n%s", out)
 	}
 }
 
@@ -335,10 +608,7 @@ func TestEscape(t *testing.T) {
 }
 
 func TestFormatLabels(t *testing.T) {
-	labels := []label{{"a", "1"}, {"b", "2"}}
-	got := formatLabels(labels)
-	want := `{a="1",b="2"}`
-	if got != want {
+	if got, want := formatLabels([]label{{"a", "1"}, {"b", "2"}}), `{a="1",b="2"}`; got != want {
 		t.Errorf("formatLabels = %q, want %q", got, want)
 	}
 	if got := formatLabels(nil); got != "" {
@@ -361,45 +631,42 @@ func TestHTTPHandler(t *testing.T) {
 	latest := "# HELP m m\n# TYPE m gauge\nm 1\n"
 	mux := http.NewServeMux()
 	// Mirror main.go: register the catch-all at "/" so that "/" and
-	// "/metrics" both route to the same handler (Go's mux would otherwise
-	// shadow the catch-all with a more specific "/metrics" pattern).
+	// "/metrics" both route to the same handler.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimRight(r.URL.Path, "/")
 		if p == "" || p == "/metrics" {
 			w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-			w.Header().Set("Content-Length", strconvItoa(len(latest)))
+			w.Header().Set("Content-Length", strconv.Itoa(len(latest)))
 			w.WriteHeader(200)
 			w.Write([]byte(latest))
 			return
 		}
 		http.NotFound(w, r)
 	})
-	rec := httptest.NewRecorder()
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	mux.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Errorf("/metrics status = %d, want 200", rec.Code)
+	for _, tc := range []struct {
+		path string
+		code int
+	}{
+		{"/metrics", 200},
+		{"/", 200},
+		{"/metrics/", 200},
+		{"/other", 404},
+	} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if rec.Code != tc.code {
+			t.Errorf("%s status = %d, want %d", tc.path, rec.Code, tc.code)
+		}
 	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; version=0.0.4; charset=utf-8" {
 		t.Errorf("content-type = %q", ct)
 	}
 	if body := rec.Body.String(); body != latest {
 		t.Errorf("body = %q, want %q", body, latest)
-	}
-
-	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
-	mux.ServeHTTP(rec2, req2)
-	if rec2.Code != 200 {
-		t.Errorf("/ status = %d, want 200", rec2.Code)
-	}
-
-	rec3 := httptest.NewRecorder()
-	req3 := httptest.NewRequest(http.MethodGet, "/other", nil)
-	mux.ServeHTTP(rec3, req3)
-	if rec3.Code != 404 {
-		t.Errorf("/other status = %d, want 404", rec3.Code)
 	}
 }
 
@@ -418,7 +685,3 @@ type testErr string
 func (e testErr) Error() string { return string(e) }
 
 func errForTest(s string) error { return testErr(s) }
-
-func strconvItoa(n int) string {
-	return strconv.Itoa(n)
-}

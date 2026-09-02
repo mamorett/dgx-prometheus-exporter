@@ -27,7 +27,7 @@ lint:
 		|| echo "golangci-lint not installed; skipping (go vet covers static checks)"
 
 docker:
-	docker build -t dgx-exporter:$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) -t dgx-exporter:$(VERSION) -t dgx-exporter:latest .
 
 clean:
 	rm -f $(BINARY)

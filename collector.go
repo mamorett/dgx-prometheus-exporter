@@ -565,6 +565,7 @@ func render(s snapshot) string {
 		{"compute_mode", s.info.computeMode},
 	}
 	emitGauge(&buf, "dgx_gpu_info", "Static GPU info.", "1", infoLabels)
+	emitGauge(&buf, "dgx_spark_info", "DGX Spark host info.", "1", []label{{"host", s.info.host}})
 
 	emitGauge(&buf, "dgx_gpu_pstate", "GPU performance state (NVIDIA P-state).",
 		"1", []label{{"pstate", s.info.pstate}})

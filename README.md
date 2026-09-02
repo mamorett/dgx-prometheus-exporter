@@ -9,7 +9,7 @@ system RAM. This collector derives unified-memory metrics from
 
 ## Metrics
 
-All 17 metrics below are emitted on **every** successful cycle. A metric whose
+All 18 metrics below are emitted on **every** successful cycle. A metric whose
 source could not answer is emitted as `nan` rather than omitted, so a lost
 reading shows up as a gap in a graph instead of a series that silently
 disappears from queries.
@@ -27,6 +27,7 @@ disappears from queries.
 | `dgx_gpu_power_draw_watts` | gauge | GPU power draw in watts (`power.draw`). | — |
 | `dgx_gpu_compute_apps` | gauge | Number of processes with a compute context on the GPU. | — |
 | `dgx_gpu_info` | gauge | Static GPU info. | `name`, `driver`, `cuda`, `uuid`, `pci_bus_id`, `host`, `vbios`, `compute_cap`, `pstate`, `compute_mode` |
+| `dgx_spark_info` | gauge | DGX Spark host info. | `host` |
 | `dgx_gpu_pstate` | gauge | GPU performance state (NVIDIA P-state). | `pstate` |
 | `dgx_gpu_compute_mode` | gauge | GPU compute mode. | `mode` |
 | `dgx_gpu_compute_mode_enabled` | gauge | 1 if compute mode is `Exclusive_Process`. | — |
@@ -107,7 +108,7 @@ Recommended alerts:
 | `--addr` | `-a` | — | `0.0.0.0` | Listen address/host. |
 | `--version` | `-v` | — | — | Print version and exit. |
 | `--help` | `-h` | — | — | Print usage help and exit. |
-| — | — | `DGX_HOST_NAME` | `os.Hostname()` | `host` label on `dgx_gpu_info`. |
+| — | — | `DGX_HOST_NAME` | `os.Hostname()` | `host` label on `dgx_gpu_info` and `dgx_spark_info`. |
 | — | — | `DGX_DRIVER_VERSION` | `""` | Authoritative driver version; overrides nvidia-smi. |
 | — | — | `DGX_CUDA_VERSION` | `""` | Authoritative CUDA version; overrides the banner. |
 

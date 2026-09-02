@@ -373,6 +373,9 @@ dgx_gpu_compute_apps 1
 # HELP dgx_gpu_info Static GPU info.
 # TYPE dgx_gpu_info gauge
 dgx_gpu_info{name="NVIDIA GB10",driver="580.173.02",cuda="13.0",uuid="GPU-0cddbf68-70f0-0aa4-7f92-a624e48fef64",pci_bus_id="0000000F:01:00.0",host="dgx1",vbios="9A.0B.1E.00.00",compute_cap="12.1",pstate="P0",compute_mode="Default"} 1
+# HELP dgx_spark_info DGX Spark host info.
+# TYPE dgx_spark_info gauge
+dgx_spark_info{host="dgx1"} 1
 # HELP dgx_gpu_pstate GPU performance state (NVIDIA P-state).
 # TYPE dgx_gpu_pstate gauge
 dgx_gpu_pstate{pstate="P0"} 1
@@ -462,6 +465,7 @@ func TestCollectHealthy(t *testing.T) {
 		`cuda="13.0"`,
 		`uuid="GPU-0cddbf68-70f0-0aa4-7f92-a624e48fef64"`,
 		"dgx_gpu_compute_apps 1\n",
+		"dgx_spark_info{host=",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

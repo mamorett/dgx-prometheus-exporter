@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="dgx-prometheus-exporter logo" width="200"/>
+  <img src="logo.png" alt="dgx-prometheus-exporter logo" width="500"/>
 </p>
 
 # dgx-prometheus-exporter
